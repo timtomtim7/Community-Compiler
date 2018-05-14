@@ -1,55 +1,14 @@
 #include "AstPrettyPrinter.h"
 
-#include "Token.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include <string>
+#include "Token.h"
+#include "Terminal.h"
 
 #define INDENT_CHARS "  "
 
-namespace TermColour {
-enum Name {
-    Black,
-    Red,
-    Green,
-    Yellow,
-    Blue,
-    Magenta,
-    Cyan,
-    White,
-    Grey,
-};
-}
-
-static constexpr const char *const term_fg[] = {
-    "\x1B[30m",
-    "\x1B[31m",
-    "\x1B[32m",
-    "\x1B[33m",
-    "\x1B[34m",
-    "\x1B[35m",
-    "\x1B[36m",
-    "\x1B[37m",
-    "\x1B[90m",
-};
-
-static constexpr const char *const term_bg[] = {
-    "\x1B[40m",
-    "\x1B[41m",
-    "\x1B[42m",
-    "\x1B[43m",
-    "\x1B[44m",
-    "\x1B[45m",
-    "\x1B[46m",
-    "\x1B[47m",
-    "",
-};
-
-static constexpr const char *const term_reset     = "\x1B[0m";
-static constexpr const char *const term_bold      = "\x1B[1m";
-static constexpr const char *const term_dim       = "\x1B[2m";
-static constexpr const char *const term_underline = "\x1B[4m";
-static constexpr const char *const term_reverse   = "\x1B[7m";
+static constexpr const char *const code_bg_esc_seq = "\x1B[48;5;236m";
 
 static std::string type_to_string(const AstType *node) {
     if(node->is_array) {
@@ -257,7 +216,7 @@ void pretty_print_dec(const AstDec *node, std::string indent) {
         node->immutable ? "let" : "var",
         term_reset,
         term_fg[TermColour::Red],
-        node->name->name.c_str(),
+        node->name.c_str(),
         term_reset);
 
     if(node->type) {
@@ -293,7 +252,7 @@ void pretty_print_fn(const AstFn *node, std::string indent) {
         term_fg[TermColour::Yellow],
         term_reset,
         term_fg[TermColour::Blue],
-        node->name->name.c_str(),
+        node->mangled_name.c_str(),
         term_reset);
 
     if(node->return_type) {
@@ -312,7 +271,7 @@ void pretty_print_fn(const AstFn *node, std::string indent) {
             (indent + INDENT_CHARS).c_str(),
             term_fg[TermColour::Yellow],
             term_reset,
-            param->name->name.c_str());
+            param->name.c_str());
     }
 
     if(node->body) {
@@ -326,7 +285,7 @@ void pretty_print_fn_call(const AstFnCall *node, std::string indent) {
         indent.c_str(),
         term_fg[TermColour::Yellow],
         term_reset);
-    pretty_print_symbol(node->name, indent + INDENT_CHARS);
+    //pretty_print_symbol(node->name, indent + INDENT_CHARS);
 
     for(auto expr : node->args) {
         pretty_print_node(expr, indent + INDENT_CHARS);
@@ -378,7 +337,7 @@ void pretty_print_impl(const AstImpl *node, std::string indent) {
         indent.c_str(),
         term_fg[TermColour::Yellow],
         term_reset);
-    pretty_print_symbol(node->name, indent + INDENT_CHARS);
+    //pretty_print_symbol(node->name, indent + INDENT_CHARS);
     pretty_print_block(node->block, indent + INDENT_CHARS);
 }
 
@@ -388,7 +347,7 @@ void pretty_print_attribute(const AstAttribute *node, std::string indent) {
         indent.c_str(),
         term_fg[TermColour::Yellow],
         term_reset);
-    pretty_print_symbol(node->name, indent + INDENT_CHARS);
+    //pretty_print_symbol(node->name, indent + INDENT_CHARS);
 }
 
 void pretty_print_affix(const AstAffix *node, std::string indent) {
@@ -416,7 +375,7 @@ void pretty_print_affix(const AstAffix *node, std::string indent) {
         pretty_print_type(node->return_type, indent + INDENT_CHARS);
     }
 
-    pretty_print_symbol(node->name, indent + INDENT_CHARS);
+    //pretty_print_symbol(node->name, indent + INDENT_CHARS);
 
     for(auto param : node->params) {
         printf(
@@ -424,7 +383,7 @@ void pretty_print_affix(const AstAffix *node, std::string indent) {
             (indent + INDENT_CHARS).c_str(),
             term_fg[TermColour::Yellow],
             term_reset,
-            param->name->name.c_str());
+            param->name.c_str());
     }
 
     pretty_print_block(node->body, indent + INDENT_CHARS);
@@ -517,8 +476,8 @@ void pretty_print_ast(Ast &ast) {
     pretty_print_block(ast.root, "");
 }
 
-static void set_colour(unsigned int i, const TokenStream &tokens) {
-    for(unsigned int j = 0; j < tokens.tokens.size(); j++) {
+static void set_colour(size_t i, const TokenStream &tokens) {
+    for(size_t j = 0; j < tokens.tokens.size(); j++) {
         const auto &token = tokens.tokens[j];
 
         if(token.offset <= i && token.offset + token.raw.size() > i) {
@@ -544,6 +503,7 @@ static void set_colour(unsigned int i, const TokenStream &tokens) {
                 break;
 
             case TokenType::IntegerLiteral:
+            case TokenType::HexLiteral:
             case TokenType::FloatLiteral:
             case TokenType::StringLiteral:
             case TokenType::Boolean:
@@ -576,9 +536,97 @@ static void set_colour(unsigned int i, const TokenStream &tokens) {
     }
 }
 
+void syntax_highlight_print_line(
+    const std::string &source, const TokenStream &tokens,
+    size_t error_start, size_t error_len, size_t context_lines
+) {
+    int lines, columns;
+    get_term_size(&lines, &columns);
+
+    size_t i = error_start, end = error_start;
+
+    for(size_t j = 0; j <= (context_lines - 1) / 2; j++) {
+        while(i > 0 && source[i] != '\n') {
+            i--;
+        }
+        if(i == 0) {
+            break;
+        }
+        i--;
+    }
+    if(i != 0) {
+        i += 2;
+    }
+
+    for(size_t j = 0; j <= (context_lines - 1) / 2; j++) {
+        while(end < source.size() && source[end] != '\n') {
+            end++;
+        }
+        if(end == source.size()) {
+            break;
+        }
+        end++;
+    }
+    if(end != source.size()) {
+        end--;
+    }
+
+    int column = 0;
+
+    for(; i < end; i++) {
+        column++;
+
+        if(i < error_start || i > error_start + error_len - 1) {
+            set_colour(i, tokens);
+            printf("%s", code_bg_esc_seq);
+            if(source[i] == '\n') {
+                putchar(' ');
+            } else {
+                putchar(source[i]);
+            }
+            printf("%s", term_reset);
+        } else {
+            printf("%s%s",
+                   term_bg[TermColour::Red], term_fg[TermColour::Black]);
+            if(source[i] == '\n') {
+                printf(" %s", term_reset);
+            } else {
+                putchar(source[i]);
+            }
+            printf("%s", term_reset);
+        }
+
+        if(source[i] == '\n') {
+            printf("%s", code_bg_esc_seq);
+            while(column < columns) {
+                putchar(' ');
+                column++;
+            }
+            column = 0;
+            putchar('\n');
+        }
+
+        printf("%s", term_reset);
+    }
+
+    printf(code_bg_esc_seq);
+    while(column < columns) {
+        putchar(' ');
+        column++;
+    }
+    printf("%s\n", term_reset);
+}
+
 void syntax_highlight_print(
     const std::string &source, const TokenStream &tokens) {
-    for(unsigned int i = 0; i < source.size(); i++) {
+    syntax_highlight_print(source, tokens, 0, source.size());
+}
+
+void syntax_highlight_print(
+    const std::string &source, const TokenStream &tokens,
+    size_t start, size_t end
+) {
+    for(size_t i = start; i < end; i++) {
         set_colour(i, tokens);
         putchar(source[i]);
     }

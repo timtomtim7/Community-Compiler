@@ -3,6 +3,9 @@
 
 #include <string>
 #include <vector>
+#include "Semantics.h"
+#include "ILemitter.h"
+#include "AstDefs.h"
 
 #define AstNodeType_ENUM(name) name
 #define AstNodeType_NAME_ARRAY(name) #name
@@ -46,17 +49,17 @@ enum class AffixType {
     Suffix,
 };
 
-typedef struct AstAttribute AstAttribute;
-
 struct AstNode {
     AstNodeType node_type;
     unsigned int line, column;
     bool emit = true;
 
-    std::vector<AstAttribute *> nested_attributes;
+    std::vector<AstAttribute*> attributes;
 
     AstNode(AstNodeType node_type, unsigned int line, unsigned int column):
         node_type(node_type), line(line), column(column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem) = 0;
 
     virtual ~AstNode() {}
 };
@@ -66,6 +69,8 @@ struct AstString : public AstNode {
 
     AstString(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstString, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstNumber : public AstNode {
@@ -81,6 +86,8 @@ struct AstNumber : public AstNode {
 
     AstNumber(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstNumber, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstBoolean : public AstNode {
@@ -88,13 +95,17 @@ struct AstBoolean : public AstNode {
 
     AstBoolean(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstBoolean, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstArray : public AstNode {
-    std::vector<AstNode *> elements;
+    std::vector<AstNode*> elements;
 
     AstArray(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstArray, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
     virtual ~AstArray() {
         for(auto p : elements) {
@@ -108,13 +119,17 @@ struct AstSymbol : public AstNode {
 
     AstSymbol(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstSymbol, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstBlock : public AstNode {
-    std::vector<AstNode *> statements;
+    std::vector<AstNode*> statements;
 
     AstBlock(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstBlock, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
     virtual ~AstBlock() {
         for(auto *p : statements) {
@@ -131,33 +146,38 @@ struct AstType : public AstNode {
     AstType(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstType, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstType() {
         delete subtype;
     }
 };
 
 struct AstDec : public AstNode {
-    AstSymbol *name = nullptr;
-    AstType *type = nullptr;
-    AstNode *value  = nullptr;
-    bool immutable  = false;
+    std::string name;
+    AstType *type  = nullptr;
+    AstNode *value = nullptr;
+    bool immutable = false;
 
     AstDec(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstDec, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstDec() {
-        delete name;
         delete type;
         delete value;
     }
 };
 
 struct AstIf : public AstNode {
-    AstNode *condition   = nullptr;
+    AstNode  *condition  = nullptr;
     AstBlock *true_block = nullptr, *false_block = nullptr;
 
     AstIf(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstIf, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
     virtual ~AstIf() {
         delete condition;
@@ -167,19 +187,19 @@ struct AstIf : public AstNode {
 };
 
 struct AstFn : public AstNode {
-    AstSymbol *type_self = nullptr;
-    AstSymbol *name      = nullptr;
-    std::vector<AstDec *> params;
+    std::string unmangled_name;
+    std::string mangled_name;
+    std::string type_self;
+    std::vector<AstDec*> params;
     AstType *return_type = nullptr;
     AstBlock *body       = nullptr;
 
-    AstFn(unsigned int line = 0, unsigned int column
-= 0):
+    AstFn(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstFn, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstFn() {
-        delete type_self;
-        delete name;
         delete return_type;
         delete body;
 
@@ -190,15 +210,16 @@ struct AstFn : public AstNode {
 };
 
 struct AstFnCall : public AstNode {
-    AstSymbol *name = nullptr;
-    std::vector<AstNode *> args;
+    std::string name;
+    std::vector<AstNode*> args;
+    bool mangled = false;
 
     AstFnCall(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstFnCall, line, column) {}
 
-    virtual ~AstFnCall() {
-        delete name;
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
+    virtual ~AstFnCall() {
         for(auto *p : args) {
             delete p;
         }
@@ -206,17 +227,18 @@ struct AstFnCall : public AstNode {
 };
 
 struct AstLoop : public AstNode {
+    std::string name;
     bool is_foreach = false;
     AstBlock *body  = nullptr;
-    AstSymbol *name = nullptr;
     AstNode *expr   = nullptr;
 
     AstLoop(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstLoop, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstLoop() {
         delete body;
-        delete name;
         delete expr;
     }
 };
@@ -224,49 +246,55 @@ struct AstLoop : public AstNode {
 struct AstContinue: public AstNode {
     AstContinue(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstContinue, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstBreak: public AstNode {
     AstBreak(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstBreak, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 };
 
 struct AstStruct : public AstNode {
-    AstSymbol *name = nullptr;
+    std::string name;
     AstBlock *block = nullptr;
 
     AstStruct(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstStruct, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstStruct() {
-        delete name;
         delete block;
     }
 };
 
 struct AstImpl : public AstNode {
-    AstSymbol *name = nullptr;
+    std::string name;
     AstBlock *block = nullptr;
 
     AstImpl(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstImpl, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstImpl() {
-        delete name;
         delete block;
     }
 };
 
 struct AstAttribute : public AstNode {
-    AstSymbol *name = nullptr;
-    std::vector<AstNode *> args;
+    std::string name;
+    std::vector<AstNode*> args;
 
     AstAttribute(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstAttribute, line, column) {}
 
-    virtual ~AstAttribute() {
-        delete name;
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
+    virtual ~AstAttribute() {
         for(auto *p : args) {
             delete p;
         }
@@ -274,8 +302,8 @@ struct AstAttribute : public AstNode {
 };
 
 struct AstAffix : public AstNode {
-    AstSymbol *name = nullptr;
-    std::vector<AstDec *> params;
+    std::string name;
+    std::vector<AstDec*> params;
     AstType *return_type = nullptr;
     AstBlock *body       = nullptr;
     AffixType affix_type;
@@ -283,8 +311,9 @@ struct AstAffix : public AstNode {
     AstAffix(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstAffix, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstAffix() {
-        delete name;
         delete return_type;
         delete body;
 
@@ -300,6 +329,8 @@ struct AstReturn : public AstNode {
     AstReturn(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstReturn, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstReturn() {
         delete expr;
     }
@@ -311,6 +342,8 @@ struct AstUnaryExpr : public AstNode {
 
     AstUnaryExpr(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstUnaryExpr, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
     virtual ~AstUnaryExpr() {
         delete expr;
@@ -324,6 +357,8 @@ struct AstBinaryExpr : public AstNode {
     AstBinaryExpr(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstBinaryExpr, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstBinaryExpr() {
         delete lhs;
         delete rhs;
@@ -336,6 +371,8 @@ struct AstIndex : public AstNode {
     AstIndex(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstIndex, line, column) {}
 
+    virtual void code_gen(ILemitter &il, Semantics &sem);
+
     virtual ~AstIndex() {
         delete array;
         delete expr;
@@ -343,23 +380,17 @@ struct AstIndex : public AstNode {
 };
 
 struct AstExtern : public AstNode {
-    std::vector<AstFn *> decls;
+    std::vector<AstFn*> decls;
 
     AstExtern(unsigned int line = 0, unsigned int column = 0):
         AstNode(AstNodeType::AstExtern, line, column) {}
+
+    virtual void code_gen(ILemitter &il, Semantics &sem);
 
     virtual ~AstExtern() {
         for(auto *p : decls) {
             delete p;
         }
-    }
-};
-
-struct Ast {
-    AstBlock *root = nullptr;
-
-    ~Ast() {
-        delete root;
     }
 };
 
